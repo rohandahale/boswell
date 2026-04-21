@@ -8,6 +8,7 @@ labels everything "Speaker".
 
 from __future__ import annotations
 
+import gc
 import logging
 from dataclasses import dataclass
 from datetime import date as _date
@@ -114,6 +115,7 @@ def transcribe(
         log.info("Transcribing %s channel (%.1fs)…", speaker, audio.size / sr)
         audio_16k = _resample_to_16k(audio, sr)
         result = mlx_whisper.transcribe(audio_16k, **kwargs)
+        del audio_16k
         for seg in result.get("segments", []):
             text = str(seg["text"]).strip()
             if not text:
@@ -127,9 +129,16 @@ def transcribe(
                 )
             )
 
+    # An hour of stereo float32 is ~1.4 GB; release each channel right after
+    # transcribing it so peak RSS isn't both channels + the MLX model.
     _run(left, me_label)
+    del left
+    gc.collect()
+
     if right is not None and not right_silent:
         _run(right, "Them")
+    del right
+    gc.collect()
 
     segments.sort(key=lambda s: s.start)
     return segments
@@ -170,10 +179,14 @@ def render_transcript_md(
         "---",
         "",
     ]
+    prev_speaker: str | None = None
     for seg in segments:
         if not seg.text:
             continue
+        if prev_speaker is not None and seg.speaker != prev_speaker:
+            lines.append("")
         lines.append(f"[{format_timestamp(seg.start)}] {seg.speaker}: {seg.text}")
+        prev_speaker = seg.speaker
     return "\n".join(lines) + "\n"
 
 

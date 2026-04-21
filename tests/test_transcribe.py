@@ -67,3 +67,22 @@ def test_render_transcript_md_skips_empty_text():
         segs, title="t", date=date(2026, 1, 1), duration_seconds=2
     )
     assert out.count("\n[") == 1
+
+
+def test_render_transcript_md_blank_line_between_speaker_turns():
+    segs = [
+        Segment(start=1.0, end=2.0, text="hi", speaker="Me"),
+        Segment(start=3.0, end=4.0, text="hello", speaker="Them"),
+        Segment(start=5.0, end=6.0, text="ok", speaker="Them"),
+        Segment(start=7.0, end=8.0, text="bye", speaker="Me"),
+    ]
+    out = render_transcript_md(
+        segs, title="t", date=date(2026, 1, 1), duration_seconds=10
+    )
+    body_lines = out.split("---\n\n", 1)[1].splitlines()
+    assert body_lines[0] == "[00:00:01] Me: hi"
+    assert body_lines[1] == ""
+    assert body_lines[2] == "[00:00:03] Them: hello"
+    assert body_lines[3] == "[00:00:05] Them: ok"
+    assert body_lines[4] == ""
+    assert body_lines[5] == "[00:00:07] Me: bye"
