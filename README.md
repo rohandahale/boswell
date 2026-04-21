@@ -5,10 +5,6 @@ mic + the other party's audio, transcribes on-device with MLX Whisper,
 and hands the transcript to interactive Claude Code for summarization
 and optional filing to Notion via MCP.
 
-Named after [James Boswell](https://en.wikipedia.org/wiki/James_Boswell) —
-the 18th-century biographer famous for transcribing Samuel Johnson's
-conversations verbatim. One word. Nobody owns it.
-
 Nothing leaves your machine unless you choose to file a summary to Notion.
 
 ## Requirements
