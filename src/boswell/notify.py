@@ -14,8 +14,8 @@ def notify(title: str, message: str) -> None:
 
         pync.notify(message, title=title)
         return
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        log.warning("pync notify failed (%s); falling back to osascript", e)
     try:
         subprocess.run(
             [

@@ -123,8 +123,14 @@ def find_input_device_for_probe():
 
 def check_whisper_model() -> Check:
     model = os.environ.get("BOSWELL_WHISPER_MODEL", DEFAULT_MODEL)
-    # mlx-whisper uses huggingface_hub cache; any hit under the repo path counts.
-    cache = Path.home() / ".cache" / "huggingface" / "hub"
+    # mlx-whisper uses huggingface_hub cache; honor HF_HOME/HF_HUB_CACHE
+    # rather than hardcoding ~/.cache/huggingface/hub. Hardcoding gives a
+    # false negative for users who relocate the cache (small SSDs, etc.).
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE  # type: ignore[import-not-found]
+        cache = Path(HF_HUB_CACHE)
+    except ImportError:
+        cache = Path.home() / ".cache" / "huggingface" / "hub"
     if not cache.exists():
         return _bad(
             "Whisper model cached",

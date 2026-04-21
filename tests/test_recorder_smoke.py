@@ -67,3 +67,42 @@ def test_recorder_writes_stereo_wav(tmp_path: Path) -> None:
     assert meta["channels"] == 2
     assert meta["sample_rate"] == 48000
     assert meta["duration_seconds"] > 0
+    assert meta["dropped_chunks"] == 0
+
+
+def test_recorder_drops_chunks_when_queue_full(tmp_path: Path) -> None:
+    """If the writer can't keep up, the callback drops rather than blocking."""
+    from boswell.recorder import _MAX_QUEUE_CHUNKS
+
+    dev = InputDevice(index=0, name="x", max_input_channels=2, default_samplerate=48000)
+    rec = Recorder(dev, tmp_path / "audio.wav", sample_rate=48000, channels=2)
+
+    # Bypass start() — exercise the callback path directly so we can control
+    # exactly how many chunks land before the writer drains anything.
+    chunk = np.zeros((512, 2), dtype="float32")
+    n_overflow = 50
+    for _ in range(_MAX_QUEUE_CHUNKS + n_overflow):
+        rec._callback(chunk, 512, None, 0)
+
+    assert rec.dropped_chunks() == n_overflow
+
+
+def test_recorder_callback_silence_seconds(tmp_path: Path) -> None:
+    dev = InputDevice(index=0, name="x", max_input_channels=2, default_samplerate=48000)
+    rec = Recorder(dev, tmp_path / "audio.wav", sample_rate=48000, channels=2)
+
+    # Before any callback fires, silence is unbounded.
+    assert rec.callback_silence_seconds() == float("inf")
+
+    rec._callback(np.zeros((128, 2), dtype="float32"), 128, None, 0)
+    silence = rec.callback_silence_seconds()
+    assert 0.0 <= silence < 1.0
+
+
+def test_recorder_write_error_accessor(tmp_path: Path) -> None:
+    dev = InputDevice(index=0, name="x", max_input_channels=2, default_samplerate=48000)
+    rec = Recorder(dev, tmp_path / "audio.wav", sample_rate=48000, channels=2)
+    assert rec.write_error() is None
+    boom = OSError("disk full")
+    rec._write_error = boom
+    assert rec.write_error() is boom

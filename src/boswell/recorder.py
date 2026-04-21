@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 _FLUSH_INTERVAL_SECONDS = 5.0
 _WRITER_POLL_SECONDS = 0.2
 _WRITER_JOIN_TIMEOUT = 10.0
+# CoreAudio typically delivers ~10 ms blocks, so 1000 chunks ≈ 10 s of audio
+# tolerated before the writer must catch up. Past that we drop rather than
+# grow unbounded — bounds peak RAM if the disk stalls (Time Machine, full
+# disk, …). At 48 kHz stereo float32 the queue caps near ~3 MB.
+_MAX_QUEUE_CHUNKS = 1000
 
 
 class RecorderError(RuntimeError):
@@ -45,14 +50,16 @@ class Recorder:
         self.output_path = Path(output_path)
         self.sample_rate = sample_rate
         self.channels = channels
-        self._queue: queue.Queue[np.ndarray] = queue.Queue()
+        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=_MAX_QUEUE_CHUNKS)
         self._stream: sd.InputStream | None = None
         self._writer_thread: threading.Thread | None = None
         self._writer_stop = threading.Event()
         self._started_at: float | None = None
         self._stopped_at: float | None = None
         self._frames_written = 0
+        self._dropped_chunks = 0
         self._write_error: BaseException | None = None
+        self._last_callback_at: float | None = None
 
     def _callback(
         self,
@@ -61,10 +68,16 @@ class Recorder:
         time_info: Any,
         status: sd.CallbackFlags,
     ) -> None:
+        self._last_callback_at = time.monotonic()
         if status:
             log.warning("Audio callback status: %s", status)
-        # sounddevice reuses the buffer; copy before handing off.
-        self._queue.put(indata.copy())
+        # sounddevice reuses the buffer; copy before handing off. put_nowait
+        # so the audio thread never blocks — drop instead if the writer is
+        # behind. A blocked audio callback would glitch all of macOS audio.
+        try:
+            self._queue.put_nowait(indata.copy())
+        except queue.Full:
+            self._dropped_chunks += 1
 
     def _writer(self) -> None:
         try:
@@ -107,6 +120,14 @@ class Recorder:
             )
             self._stream.start()
         except Exception:
+            # If construction succeeded but start() raised, the stream is
+            # half-open — close it so we don't leak the device handle.
+            if self._stream is not None:
+                try:
+                    self._stream.close()
+                except Exception:
+                    log.exception("Failed to close half-open input stream")
+                self._stream = None
             self._writer_stop.set()
             if self._writer_thread:
                 self._writer_thread.join(timeout=_WRITER_JOIN_TIMEOUT)
@@ -148,6 +169,7 @@ class Recorder:
             "device_name": self.device.name,
             "device_index": self.device.index,
             "frames_written": self._frames_written,
+            "dropped_chunks": self._dropped_chunks,
             "output_path": str(self.output_path),
         }
 
@@ -159,3 +181,21 @@ class Recorder:
             return 0.0
         end = self._stopped_at or time.time()
         return end - self._started_at
+
+    def write_error(self) -> BaseException | None:
+        """Returns the writer-thread exception if it died; None otherwise."""
+        return self._write_error
+
+    def callback_silence_seconds(self) -> float:
+        """Seconds since the last input callback fired.
+
+        inf before the first callback (right after start). The menubar polls
+        this to detect when the input device has gone away mid-recording —
+        sounddevice doesn't always raise; sometimes it just stops calling.
+        """
+        if self._last_callback_at is None:
+            return float("inf")
+        return time.monotonic() - self._last_callback_at
+
+    def dropped_chunks(self) -> int:
+        return self._dropped_chunks
