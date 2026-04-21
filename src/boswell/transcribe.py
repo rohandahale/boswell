@@ -27,12 +27,25 @@ _WHISPER_SR = 16000  # Whisper expects 16 kHz; resample before handoff.
 def _resample_to_16k(audio: np.ndarray, sr: int) -> np.ndarray:
     if sr == _WHISPER_SR:
         return audio.astype("float32", copy=False)
-    # Linear interpolation is good enough for speech; avoids a scipy dep.
-    n_in = audio.shape[0]
-    n_out = int(round(n_in * _WHISPER_SR / sr))
-    x_in = np.linspace(0.0, 1.0, n_in, endpoint=False, dtype=np.float64)
-    x_out = np.linspace(0.0, 1.0, n_out, endpoint=False, dtype=np.float64)
-    return np.interp(x_out, x_in, audio).astype("float32")
+    # Prefer scipy.signal.resample_poly (polyphase FIR, no aliasing). Fall
+    # back to linear interp if scipy isn't installed — Whisper tolerates
+    # it for speech, just with slightly worse high-frequency response.
+    try:
+        from math import gcd
+
+        from scipy.signal import resample_poly  # type: ignore[import-not-found]
+
+        g = gcd(sr, _WHISPER_SR)
+        up = _WHISPER_SR // g
+        down = sr // g
+        return resample_poly(audio, up, down).astype("float32")
+    except ImportError:
+        log.warning("scipy not installed; using linear-interp resampler (slight aliasing).")
+        n_in = audio.shape[0]
+        n_out = int(round(n_in * _WHISPER_SR / sr))
+        x_in = np.linspace(0.0, 1.0, n_in, endpoint=False, dtype=np.float64)
+        x_out = np.linspace(0.0, 1.0, n_out, endpoint=False, dtype=np.float64)
+        return np.interp(x_out, x_in, audio).astype("float32")
 
 
 @dataclass

@@ -70,15 +70,55 @@ def check_aggregate() -> Check:
 
 
 def check_mic_permission() -> Check:
-    # macOS TCC doesn't expose mic permission programmatically without private
-    # APIs; the honest signal is whether sounddevice can actually open a stream.
-    # We don't do that here to avoid triggering the prompt outside a recording
-    # context. Just instruct the user how to check.
-    return Check(
-        "Microphone permission",
-        True,  # treat as advisory, not a hard failure
-        "(check manually — System Settings → Privacy & Security → Microphone)",
-    )
+    """Probe TCC by briefly opening + closing an input stream.
+
+    If TCC has silently denied mic access, `sounddevice.InputStream` raises
+    a PortAudioError. We open on the same device the recorder would use,
+    read one small block, and tear down. The first probe after install
+    triggers the macOS prompt; subsequent probes are silent.
+    """
+    try:
+        import sounddevice as sd
+    except Exception as e:  # noqa: BLE001
+        return _bad("Microphone permission", f"import failed: {e}", "check deps")
+
+    try:
+        dev = find_input_device_for_probe()
+    except Exception as e:  # noqa: BLE001
+        return _bad(
+            "Microphone permission",
+            f"no usable input device: {e}",
+            "create the Aggregate Device (see README)",
+        )
+
+    try:
+        with sd.InputStream(
+            samplerate=int(dev.default_samplerate) or 48000,
+            channels=min(2, dev.max_input_channels),
+            device=dev.index,
+            dtype="float32",
+            blocksize=1024,
+        ) as stream:
+            stream.read(1024)
+    except Exception as e:  # noqa: BLE001 — any failure here = not granted
+        msg = str(e).lower()
+        if "-50" in msg or "permission" in msg or "denied" in msg:
+            hint = (
+                "System Settings → Privacy & Security → Microphone → enable for "
+                "your terminal / Python"
+            )
+        else:
+            hint = "System Settings → Privacy & Security → Microphone"
+        return _bad("Microphone permission", str(e), hint)
+    return _ok("Microphone permission", f"stream opened on {dev.name!r}")
+
+
+def find_input_device_for_probe():
+    """Helper that defers the devices import so other checks still load if
+    sounddevice is broken."""
+    from .devices import find_input_device
+
+    return find_input_device()
 
 
 def check_whisper_model() -> Check:

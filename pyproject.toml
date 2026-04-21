@@ -22,6 +22,7 @@ dependencies = [
     "sounddevice==0.4.7",
     "soundfile>=0.12,<0.14",
     "numpy>=1.26,<2.2",
+    "scipy>=1.11",
     "mlx-whisper>=0.4,<0.5",
     "rumps==0.4.0",
     "pync==2.0.3",
