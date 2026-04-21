@@ -49,11 +49,9 @@ def check_blackhole() -> Check:
 
 def check_aggregate() -> Check:
     hint = os.environ.get("BOSWELL_INPUT_DEVICE", "Boswell").lower()
-    # Accept legacy "Notetaker" names for backward compat.
-    accepted = {hint, "boswell", "notetaker"}
     matches = [
         d for d in list_input_devices()
-        if any(tag in d.name.lower() for tag in accepted) and d.max_input_channels >= 2
+        if hint in d.name.lower() and d.max_input_channels >= 2
     ]
     if matches:
         d = matches[0]
@@ -63,7 +61,7 @@ def check_aggregate() -> Check:
         )
     return _bad(
         "Aggregate device found",
-        "no multi-channel device whose name contains 'Boswell' (or 'Notetaker')",
+        f"no multi-channel device whose name contains {hint!r}",
         "Audio MIDI Setup → + → Create Aggregate Device (mic + BlackHole). "
         "Rename it to contain 'Boswell'.",
     )

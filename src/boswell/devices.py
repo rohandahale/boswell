@@ -6,8 +6,7 @@ BlackHole, with mic on channel 1 and BlackHole on channels 2-3 (stereo).
 
 The device is selected by the `BOSWELL_INPUT_DEVICE` env var (substring
 match against the device name) or, if unset, by looking for a device whose
-name contains "Boswell" (or the legacy "Notetaker" for backward compat).
-Fails loud with a clear error if no match.
+name contains "Boswell". Fails loud with a clear error if no match.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ import sounddevice as sd
 log = logging.getLogger(__name__)
 
 _DEVICE_ENV = "BOSWELL_INPUT_DEVICE"
-_DEFAULT_HINTS = ("Boswell", "Notetaker")  # first match wins; legacy accepted.
+_DEFAULT_HINTS = ("Boswell",)
 
 
 class DeviceError(RuntimeError):
