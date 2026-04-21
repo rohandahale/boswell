@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual envs (should live outside the repo, but guard anyway)
+.venv/
+venv/
+env/
+
+# Meeting artifacts (never commit recordings/transcripts)
+/Meetings/
+audio.wav
+transcript.md
+summary.md
+transcribe.log
+metadata.json
+
+# Local overrides
+.env
+*.local

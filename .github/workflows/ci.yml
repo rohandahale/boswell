@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest (macOS ${{ matrix.macos }} / Python ${{ matrix.python }})
+    runs-on: macos-${{ matrix.macos }}
+    strategy:
+      fail-fast: false
+      matrix:
+        macos: ["14", "15"]
+        python: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install PortAudio (sounddevice runtime)
+        run: brew install portaudio
+
+      - name: Install package (pure-Python deps only for CI)
+        # We skip mlx-whisper / rumps / pync in CI — they only run on the
+        # user's Mac and aren't exercised by the unit tests. This keeps CI
+        # fast and avoids downloading the Whisper model.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "sounddevice==0.4.7" \
+            "soundfile>=0.12,<0.14" \
+            "numpy>=1.26,<2.2" \
+            "pytest>=8" "pytest-cov>=5"
+          python -m pip install -e . --no-deps
+
+      - name: Run pytest
+        run: pytest -v
