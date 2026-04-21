@@ -56,6 +56,64 @@ def test_resampler_passthrough_when_already_16k() -> None:
     assert out.dtype == np.float32
 
 
+def test_load_channel_matches_full_load(tmp_path: Path) -> None:
+    sr = 48000
+    wav = tmp_path / "stereo.wav"
+    left = _tone(300, 0.5, sr)
+    right = _tone(600, 0.5, sr)
+    _write_wav(wav, left=left, right=right, sr=sr)
+
+    loaded_left, loaded_sr = transcribe._load_channel(wav, 0)
+    loaded_right, _ = transcribe._load_channel(wav, 1)
+
+    assert loaded_sr == sr
+    # Exact match vs. the naive full-load-then-slice path.
+    full = sf.read(str(wav), dtype="float32")[0]
+    assert np.array_equal(loaded_left, full[:, 0])
+    assert np.array_equal(loaded_right, full[:, 1])
+
+
+def test_load_channel_rejects_out_of_range(tmp_path: Path) -> None:
+    sr = 48000
+    wav = tmp_path / "stereo.wav"
+    _write_wav(wav, left=_tone(300, 0.1, sr), right=_tone(600, 0.1, sr), sr=sr)
+    try:
+        transcribe._load_channel(wav, 2)
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for out-of-range channel")
+
+
+def test_channel_mean_energy_matches_naive(tmp_path: Path) -> None:
+    sr = 48000
+    wav = tmp_path / "stereo.wav"
+    left = _tone(300, 0.5, sr)
+    right = np.zeros(len(left), dtype="float32")
+    _write_wav(wav, left=left, right=right, sr=sr)
+
+    streaming_left = transcribe._channel_mean_energy(wav, 0)
+    streaming_right = transcribe._channel_mean_energy(wav, 1)
+    expected_left = float(np.abs(left).mean())
+    expected_right = 0.0
+
+    # Chunked sum differs from single-pass only by float32 associativity;
+    # tolerance matches the silence threshold the value actually feeds.
+    assert abs(streaming_left - expected_left) < transcribe._SILENCE_ENERGY_THRESHOLD
+    assert streaming_right == expected_right
+
+
+def test_mean_energy_chunked_matches_naive() -> None:
+    rng = np.random.default_rng(42)
+    x = (rng.standard_normal(2_500_000).astype("float32") * 0.1)
+    chunked = transcribe._mean_energy(x)
+    naive = float(np.abs(x).mean())
+    assert abs(chunked - naive) < transcribe._SILENCE_ENERGY_THRESHOLD
+
+
+def test_mean_energy_empty_returns_zero() -> None:
+    assert transcribe._mean_energy(np.array([], dtype="float32")) == 0.0
+
+
 def test_stereo_both_channels_labeled_me_and_them(tmp_path: Path) -> None:
     sr = 48000
     wav = tmp_path / "both.wav"

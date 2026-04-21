@@ -57,17 +57,77 @@ class Segment:
     speaker: str
 
 
-def _load_channels(wav_path: Path) -> tuple[np.ndarray, np.ndarray | None, int]:
-    data, sr = sf.read(str(wav_path), dtype="float32")
-    if data.ndim == 1:
-        return data, None, sr
-    left = np.ascontiguousarray(data[:, 0])
-    right = np.ascontiguousarray(data[:, 1]) if data.shape[1] >= 2 else None
-    return left, right, sr
+_LOAD_CHUNK_FRAMES = 1 << 16  # ≈ 256 KB per channel per chunk for float32
+_ENERGY_CHUNK_SAMPLES = 1 << 20  # ≈ 4 MB per chunk for float32
+
+
+def _file_channels(wav_path: Path) -> tuple[int, int]:
+    """Read (channel_count, samplerate) without loading any audio."""
+    with sf.SoundFile(str(wav_path)) as f:
+        return f.channels, f.samplerate
+
+
+def _load_channel(wav_path: Path, channel: int) -> tuple[np.ndarray, int]:
+    """Load a single channel from a (possibly multichannel) WAV.
+
+    Streams the file in chunks and demuxes into a pre-allocated output. Peak
+    transient is one chunk (~256 KB) instead of the full N×channels read
+    that sf.read() would do. Match for sf.read(...)[:, channel] otherwise.
+    """
+    with sf.SoundFile(str(wav_path)) as f:
+        sr = f.samplerate
+        n_frames = len(f)
+        if channel >= f.channels:
+            raise ValueError(
+                f"channel {channel} out of range (file has {f.channels})"
+            )
+        out = np.empty(n_frames, dtype="float32")
+        pos = 0
+        while True:
+            block = f.read(_LOAD_CHUNK_FRAMES, dtype="float32", always_2d=True)
+            if block.shape[0] == 0:
+                break
+            n = block.shape[0]
+            out[pos:pos + n] = block[:, channel]
+            pos += n
+    return out[:pos], sr
+
+
+def _channel_mean_energy(wav_path: Path, channel: int) -> float:
+    """Stream-compute mean(|samples|) for one channel without loading it.
+
+    Numerically equivalent to np.abs(channel).mean() to within float
+    associativity (well below the silence threshold), with bounded
+    transient memory.
+    """
+    with sf.SoundFile(str(wav_path)) as f:
+        if channel >= f.channels:
+            return 0.0
+        total = 0.0
+        count = 0
+        while True:
+            block = f.read(_LOAD_CHUNK_FRAMES, dtype="float32", always_2d=True)
+            if block.shape[0] == 0:
+                break
+            ch = block[:, channel]
+            total += float(np.abs(ch).sum())
+            count += ch.size
+    return total / count if count else 0.0
 
 
 def _mean_energy(x: np.ndarray) -> float:
-    return float(np.abs(x).mean()) if x.size else 0.0
+    """Mean of |x|, computed in chunks so the np.abs() temp stays bounded.
+
+    The naive np.abs(x).mean() allocates a same-sized temp — ~700 MB on a
+    1-hour mono channel at 48 kHz. Chunked sums keep the transient at
+    ~4 MB and remain bit-exact-enough for the silence threshold (1e-5).
+    """
+    if not x.size:
+        return 0.0
+    total = 0.0
+    for i in range(0, x.size, _ENERGY_CHUNK_SAMPLES):
+        total += float(np.abs(x[i:i + _ENERGY_CHUNK_SAMPLES]).sum())
+    return total / x.size
 
 
 def transcribe(
@@ -77,14 +137,9 @@ def transcribe(
 ) -> list[Segment]:
     import mlx_whisper  # imported lazily; loading MLX is heavy
 
-    left, right, sr = _load_channels(Path(wav_path))
-    log.info(
-        "Loaded audio: %s (%.1fs, sr=%d, stereo=%s)",
-        wav_path,
-        left.size / sr if sr else 0,
-        sr,
-        right is not None,
-    )
+    wav_path = Path(wav_path)
+    n_channels, sr = _file_channels(wav_path)
+    log.info("Audio file: %s (sr=%d, channels=%d)", wav_path, sr, n_channels)
 
     # Suppress common Whisper hallucinations on silence/near-silence:
     # - no_speech_threshold: skip segments Whisper itself thinks are non-speech
@@ -100,10 +155,13 @@ def transcribe(
     if language:
         kwargs["language"] = language
 
-    # In-person mode: if the BlackHole channel is empty, the mic channel is
-    # a mixed-speaker recording, not just "Me". Relabel generically so the
-    # transcript doesn't misattribute. Proper diarization is Phase 3.
-    right_silent = right is None or _mean_energy(right) < _SILENCE_ENERGY_THRESHOLD
+    # In-person mode: if the BlackHole channel is silent, the mic channel
+    # is a mixed-speaker recording — relabel generically so the transcript
+    # doesn't misattribute. Proper diarization is Phase 3. Probe via
+    # streaming so we don't load the right channel just to check it.
+    right_silent = (
+        n_channels < 2 or _channel_mean_energy(wav_path, 1) < _SILENCE_ENERGY_THRESHOLD
+    )
     me_label = "Speaker" if right_silent else "Me"
 
     segments: list[Segment] = []
@@ -129,16 +187,18 @@ def transcribe(
                 )
             )
 
-    # An hour of stereo float32 is ~1.4 GB; release each channel right after
-    # transcribing it so peak RSS isn't both channels + the MLX model.
+    # Process channels one at a time so peak audio RAM is one channel
+    # (~700 MB on a 1-hour stereo recording) instead of both.
+    left, _ = _load_channel(wav_path, 0)
     _run(left, me_label)
     del left
     gc.collect()
 
-    if right is not None and not right_silent:
+    if n_channels >= 2 and not right_silent:
+        right, _ = _load_channel(wav_path, 1)
         _run(right, "Them")
-    del right
-    gc.collect()
+        del right
+        gc.collect()
 
     segments.sort(key=lambda s: s.start)
     return segments
